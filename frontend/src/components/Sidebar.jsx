@@ -1,17 +1,12 @@
 import React from 'react';
 
-export default function Sidebar({ data, onRiverSelect }) {
-    if (data) console.log("Sidebar received:", data);
-
-    // Robust check: Try to get data from history[0], fallback to top-level data, fallback to empty
-    const latestData = (data && data.history && data.history.length > 0) 
-        ? data.history[0] 
-        : (data || {});
-
+export default function Sidebar({ data, onRiverSelect, currentRiver }) {
+    
+    // DEFINING THE 3 RIVERS HERE
     const rivers = [
-        { name: "Study Area (Current Data)", coords: [14.995, 72.47] },
-        { name: "Ganga (Varanasi)", coords: [25.3176, 83.0062] },
-        { name: "Yamuna (Delhi)", coords: [28.6139, 77.2090] },
+        { id: "netravati",  name: "Netravati River",  coords: [12.86, 74.85] },
+        { id: "kali",       name: "Kali River",       coords: [14.84, 74.13] },
+        { id: "sharavathi", name: "Sharavathi River", coords: [14.28, 74.45] },
     ];
 
     return (
@@ -21,21 +16,22 @@ export default function Sidebar({ data, onRiverSelect }) {
                 <p className="text-sm text-blue-600 font-medium uppercase tracking-wider">Salinity Prediction Model</p>
             </div>
 
-            {/* Region Selection */}
+            {/* RIVER SELECTION DROPDOWN */}
             <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
-                 <label className="text-xs font-bold text-blue-800 uppercase mb-2 block">Select Region</label>
+                 <label className="text-xs font-bold text-blue-800 uppercase mb-2 block">Select River Basin</label>
                  <select 
                     className="w-full p-3 bg-white border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-medium"
+                    value={currentRiver} // Shows current selection
                     onChange={(e) => {
-                        const r = rivers.find(riv => riv.name === e.target.value);
-                        if(r) onRiverSelect(r.coords);
+                        const selectedId = e.target.value;
+                        const r = rivers.find(riv => riv.id === selectedId);
+                        if(r) onRiverSelect(selectedId, r.coords);
                     }}
                  >
-                    {rivers.map(r => <option key={r.name} value={r.name}>{r.name}</option>)}
+                    {rivers.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                  </select>
             </div>
 
-            {/* Results Area */}
             <div className="flex-grow">
                 {!data ? (
                     <div className="h-64 flex items-center justify-center text-center p-6 bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl">
@@ -52,16 +48,13 @@ export default function Sidebar({ data, onRiverSelect }) {
                              </p>
                         </div>
 
-                        {/* FOCUSED SINGLE METRIC DISPLAY */}
                         <div className="mt-6">
                             <h2 className="text-xl font-bold text-gray-800 mb-3">Analysis Result</h2>
-                            
-                            {/* Large Hero Card for Salinity */}
                             <div className="bg-blue-600 text-white p-6 rounded-2xl shadow-lg shadow-blue-200">
                                 <span className="text-sm uppercase font-bold opacity-80 tracking-wider">Predicted Salinity</span>
                                 <div className="flex items-baseline mt-2">
                                     <span className="text-5xl font-extrabold">
-                                        {(latestData.ai_salinity_prediction ?? data.ai_salinity_prediction ?? 0).toFixed(3)}
+                                        {(data.ai_salinity_prediction || 0).toFixed(3)}
                                     </span>
                                     <span className="text-xl font-medium ml-2 opacity-90">PSU</span>
                                 </div>
