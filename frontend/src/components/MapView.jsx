@@ -1,4 +1,4 @@
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents, ImageOverlay, Rectangle } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, ImageOverlay } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
@@ -9,12 +9,19 @@ import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 let DefaultIcon = L.icon({ iconUrl: icon, shadowUrl: iconShadow, iconAnchor: [12, 41], popupAnchor: [1, -34] });
 L.Marker.prototype.options.icon = DefaultIcon;
 
+// =========================================================
+// 🚀 DEPLOYMENT CONFIGURATION
+// Replace this with your actual Render URL (no trailing slash)
+const BACKEND_URL = "https://aqua-monitor-api.onrender.com"; 
+// =========================================================
+
 function ClickHandler({ onDataFound, selectedRiver }) {
   useMapEvents({
     click: async (e) => {
       const { lat, lng } = e.latlng;
       try {
-        const res = await axios.get(`http://127.0.0.1:8000/api/get-nearest?lat=${lat}&lng=${lng}&river=${selectedRiver}`);
+        // Updated to use the live backend URL
+        const res = await axios.get(`${BACKEND_URL}/api/get-nearest?lat=${lat}&lng=${lng}&river=${selectedRiver}`);
         if (res.data && res.data.found) onDataFound(res.data);
       } catch (error) { console.error("Backend Error:", error); }
     },
@@ -35,12 +42,14 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver }) {
 
     useEffect(() => {
         if(!selectedRiver) return;
-        axios.get(`http://127.0.0.1:8000/api/bounds?river=${selectedRiver}`)
+        
+        // Updated to use the live backend URL
+        axios.get(`${BACKEND_URL}/api/bounds?river=${selectedRiver}`)
             .then(res => {
                 if(res.data.min_lat) {
                     const b = res.data;
                     setOverlayBounds([[b.min_lat, b.min_lng], [b.max_lat, b.max_lng]]);
-                    setHeatmapUrl(`http://127.0.0.1:8000/api/get-heatmap?river=${selectedRiver}&t=${Date.now()}`);
+                    setHeatmapUrl(`${BACKEND_URL}/api/get-heatmap?river=${selectedRiver}&t=${Date.now()}`);
                 } else {
                     setOverlayBounds(null); setHeatmapUrl(null);
                 }
@@ -74,16 +83,14 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver }) {
                 )}
             </MapContainer>
 
-            {/* --- CUSTOM RESPONSIVE LEGEND --- */}
-            {/* Positioned absolutely on top of the map container, handled by Tailwind */}
+            {/* CUSTOM RESPONSIVE LEGEND */}
             <div className="absolute bottom-6 right-2 z-[500] bg-white/90 p-2 rounded-lg shadow-md scale-75 md:scale-100 origin-bottom-right backdrop-blur-sm border border-gray-200">
                 <div className="text-[10px] md:text-xs font-bold text-gray-600 mb-1 uppercase tracking-wider">Salinity (PSU)</div>
                 <div className="flex items-center gap-1">
                     <span className="text-[10px] font-mono text-gray-500">0</span>
-                    {/* Plasma Gradient */}
                     <div style={{ 
                         width: '100px', height: '8px', 
-                        background: 'linear-gradient(to left, #0d0887, #6a00a8, #b12a90, #e16462, #fca636, #f0f921)',
+                        background: 'linear-gradient(to right, #0d0887, #6a00a8, #b12a90, #e16462, #fca636, #f0f921)',
                         borderRadius: '2px'
                     }}></div>
                     <span className="text-[10px] font-mono text-gray-500">35+</span>
