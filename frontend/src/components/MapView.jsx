@@ -12,7 +12,7 @@ L.Marker.prototype.options.icon = DefaultIcon;
 // =========================================================
 // 🚀 DEPLOYMENT CONFIGURATION
 // Replace this with your actual Render URL (no trailing slash)
-const BACKEND_URL = "https://aqua-monitor-api.onrender.com"; 
+const BACKEND_URL = "https://water-quality-dashboard-b2gd.onrender.com";
 // =========================================================
 
 function ClickHandler({ onDataFound, selectedRiver }) {
