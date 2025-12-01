@@ -47,14 +47,19 @@ class GATModel(nn.Module):
 # ==========================================
 app = FastAPI()
 
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",                                      # For local testing
+        "https://water-quality-dashboard-azure.vercel.app",           # Your Vercel URL (From error log)
+        "https://water-quality-dashboard.vercel.app"                  # Add main domain just in case
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # --- THIS IS THE CONFIGURATION MATCHING YOUR FILES EXACTLY ---
 RIVER_CONFIG = {
     "netravati": {
