@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pandas
+numpy
+scikit-learn
+joblib
+geopandas
+shapely
+matplotlib
+scipy
+torch
+torch-geometric
+python-multipart
