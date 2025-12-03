@@ -9,15 +9,15 @@ import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 let DefaultIcon = L.icon({ iconUrl: icon, shadowUrl: iconShadow, iconAnchor: [12, 41], popupAnchor: [1, -34] });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-// ⚠️ REPLACE WITH YOUR DEPLOYED URL IF DEPLOYING
 const BACKEND_URL = "http://127.0.0.1:8000"; 
 
-function ClickHandler({ onDataFound, selectedRiver, selectedDate }) {
+function ClickHandler({ onDataFound, selectedRiver, selectedDate, activeParam }) {
   useMapEvents({
     click: async (e) => {
       const { lat, lng } = e.latlng;
       try {
-        const url = `${BACKEND_URL}/api/get-nearest?lat=${lat}&lng=${lng}&river=${selectedRiver}&date=${selectedDate}`;
+        // SEND PARAM TO BACKEND
+        const url = `${BACKEND_URL}/api/get-nearest?lat=${lat}&lng=${lng}&river=${selectedRiver}&date=${selectedDate}&param=${activeParam}`;
         const res = await axios.get(url);
         if (res.data && res.data.found) onDataFound(res.data);
       } catch (error) { console.error("Backend Error:", error); }
@@ -32,7 +32,7 @@ function MapUpdater({ center }) {
   return null;
 }
 
-export default function MapView({ onMapClick, centerPosition, selectedRiver, selectedDate }) {
+export default function MapView({ onMapClick, centerPosition, selectedRiver, selectedDate, activeParam }) {
     const [activeMarker, setActiveMarker] = useState(null);
     const [overlayBounds, setOverlayBounds] = useState(null);
     const [heatmapUrl, setHeatmapUrl] = useState(null);
@@ -45,14 +45,16 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver, sel
                 if(res.data.min_lat) {
                     const b = res.data;
                     setOverlayBounds([[b.min_lat, b.min_lng], [b.max_lat, b.max_lng]]);
-                    // Pass date to heatmap
-                    setHeatmapUrl(`${BACKEND_URL}/api/get-heatmap?river=${selectedRiver}&date=${selectedDate}&t=${Date.now()}`);
+                    
+                    // SEND PARAM TO BACKEND FOR HEATMAP
+                    const url = `${BACKEND_URL}/api/get-heatmap?river=${selectedRiver}&date=${selectedDate}&param=${activeParam}&t=${Date.now()}`;
+                    setHeatmapUrl(url);
                 } else {
                     setOverlayBounds(null); setHeatmapUrl(null);
                 }
             })
             .catch(err => console.error(err));
-    }, [selectedRiver, selectedDate]); // Update when date changes
+    }, [selectedRiver, selectedDate, activeParam]);
 
     const handleDataFound = (data) => {
         onMapClick(data);
@@ -69,7 +71,8 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver, sel
                 <ClickHandler 
                     onDataFound={handleDataFound} 
                     selectedRiver={selectedRiver} 
-                    selectedDate={selectedDate} 
+                    selectedDate={selectedDate}
+                    activeParam={activeParam} 
                 />
                 <MapUpdater center={centerPosition} />
 
@@ -79,22 +82,30 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver, sel
 
                 {activeMarker && (
                     <Marker position={activeMarker}>
-                        <Popup>Salinity Prediction</Popup>
+                        <Popup>Prediction Location</Popup>
                     </Marker>
                 )}
             </MapContainer>
 
-            {/* CUSTOM RESPONSIVE LEGEND */}
+            {/* LEGEND */}
             <div className="absolute bottom-6 right-2 z-[500] bg-white/90 p-2 rounded-lg shadow-md scale-75 md:scale-100 origin-bottom-right backdrop-blur-sm border border-gray-200">
-                <div className="text-[10px] md:text-xs font-bold text-gray-600 mb-1 uppercase tracking-wider">Salinity (PSU)</div>
+                <div className="text-[10px] md:text-xs font-bold text-gray-600 mb-1 uppercase tracking-wider">
+                    {activeParam} Level
+                </div>
                 <div className="flex items-center gap-1">
-                    <span className="text-[10px] font-mono text-gray-500">0</span>
+                    <span className="text-[10px] font-mono text-gray-500">Low</span>
                     <div style={{ 
                         width: '100px', height: '8px', 
-                        background: 'linear-gradient(to left, #0d0887, #6a00a8, #b12a90, #e16462, #fca636, #f0f921)',
+                        // Dynamic Gradient based on activeParam
+                        background: activeParam === 'salinity' 
+                            ? 'linear-gradient(to right, #0d0887, #f0f921)' // Plasma
+                            : (activeParam === 'chlorophyll' 
+                                ? 'linear-gradient(to right, #440154, #5ec962)' // Viridis
+                                : 'linear-gradient(to right, #00224e, #ffe945)') // Cividis
+                        ,
                         borderRadius: '2px'
                     }}></div>
-                    <span className="text-[10px] font-mono text-gray-500">35+</span>
+                    <span className="text-[10px] font-mono text-gray-500">High</span>
                 </div>
             </div>
         </div>
