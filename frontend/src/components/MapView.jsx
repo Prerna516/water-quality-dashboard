@@ -9,19 +9,16 @@ import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 let DefaultIcon = L.icon({ iconUrl: icon, shadowUrl: iconShadow, iconAnchor: [12, 41], popupAnchor: [1, -34] });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-// =========================================================
-// 🚀 DEPLOYMENT CONFIGURATION
-// Replace this with your actual Render URL (no trailing slash)
-const BACKEND_URL = "https://water-quality-dashboard-b2gd.onrender.com";
-// =========================================================
+// ⚠️ REPLACE WITH YOUR DEPLOYED URL IF DEPLOYING
+const BACKEND_URL = "http://127.0.0.1:8000"; 
 
-function ClickHandler({ onDataFound, selectedRiver }) {
+function ClickHandler({ onDataFound, selectedRiver, selectedDate }) {
   useMapEvents({
     click: async (e) => {
       const { lat, lng } = e.latlng;
       try {
-        // Updated to use the live backend URL
-        const res = await axios.get(`${BACKEND_URL}/api/get-nearest?lat=${lat}&lng=${lng}&river=${selectedRiver}`);
+        const url = `${BACKEND_URL}/api/get-nearest?lat=${lat}&lng=${lng}&river=${selectedRiver}&date=${selectedDate}`;
+        const res = await axios.get(url);
         if (res.data && res.data.found) onDataFound(res.data);
       } catch (error) { console.error("Backend Error:", error); }
     },
@@ -35,7 +32,7 @@ function MapUpdater({ center }) {
   return null;
 }
 
-export default function MapView({ onMapClick, centerPosition, selectedRiver }) {
+export default function MapView({ onMapClick, centerPosition, selectedRiver, selectedDate }) {
     const [activeMarker, setActiveMarker] = useState(null);
     const [overlayBounds, setOverlayBounds] = useState(null);
     const [heatmapUrl, setHeatmapUrl] = useState(null);
@@ -43,19 +40,19 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver }) {
     useEffect(() => {
         if(!selectedRiver) return;
         
-        // Updated to use the live backend URL
         axios.get(`${BACKEND_URL}/api/bounds?river=${selectedRiver}`)
             .then(res => {
                 if(res.data.min_lat) {
                     const b = res.data;
                     setOverlayBounds([[b.min_lat, b.min_lng], [b.max_lat, b.max_lng]]);
-                    setHeatmapUrl(`${BACKEND_URL}/api/get-heatmap?river=${selectedRiver}&t=${Date.now()}`);
+                    // Pass date to heatmap
+                    setHeatmapUrl(`${BACKEND_URL}/api/get-heatmap?river=${selectedRiver}&date=${selectedDate}&t=${Date.now()}`);
                 } else {
                     setOverlayBounds(null); setHeatmapUrl(null);
                 }
             })
             .catch(err => console.error(err));
-    }, [selectedRiver]);
+    }, [selectedRiver, selectedDate]); // Update when date changes
 
     const handleDataFound = (data) => {
         onMapClick(data);
@@ -69,7 +66,11 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver }) {
             <MapContainer center={centerPosition} zoom={11} style={{ height: '100%', width: '100%' }} zoomControl={false}>
                 <TileLayer attribution='&copy; CartoDB' url={lightTiles} />
                 
-                <ClickHandler onDataFound={handleDataFound} selectedRiver={selectedRiver} />
+                <ClickHandler 
+                    onDataFound={handleDataFound} 
+                    selectedRiver={selectedRiver} 
+                    selectedDate={selectedDate} 
+                />
                 <MapUpdater center={centerPosition} />
 
                 {overlayBounds && heatmapUrl && (
@@ -90,7 +91,7 @@ export default function MapView({ onMapClick, centerPosition, selectedRiver }) {
                     <span className="text-[10px] font-mono text-gray-500">0</span>
                     <div style={{ 
                         width: '100px', height: '8px', 
-                        background: 'linear-gradient(to right, #0d0887, #6a00a8, #b12a90, #e16462, #fca636, #f0f921)',
+                        background: 'linear-gradient(to left, #0d0887, #6a00a8, #b12a90, #e16462, #fca636, #f0f921)',
                         borderRadius: '2px'
                     }}></div>
                     <span className="text-[10px] font-mono text-gray-500">35+</span>
