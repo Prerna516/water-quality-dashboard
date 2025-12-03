@@ -177,31 +177,98 @@ async def get_heatmap(river: str = "netravati", date: str = None, param: str = "
     # 1. Pick Correct CSV
     df_key = 'salinity' if param == 'salinity' else 'quality'
     df = sys['dfs'].get(df_key)
-    if df is None: return Response(status_code=404)
+    if df is None: 
+        print(f"❌ No {df_key} data found for {river}")
+        return Response(status_code=404)
 
     try:
+        # 2. Filter by date if provided, but be flexible
         if date and date != "" and 'DATE' in df.columns:
-            df = df[df['DATE'] == date]
-            if len(df) < 4: return Response(status_code=204)
+            df_filtered = df[df['DATE'] == date]
+            
+            # Only apply filter if we have enough data for that date
+            if len(df_filtered) >= 4:
+                df = df_filtered
+                print(f"✅ Using {len(df)} points for {param} on {date}")
+            else:
+                # Fall back to most recent date or all data
+                print(f"⚠️ Only {len(df_filtered)} points for {param} on {date}")
+                
+                # Try to find the closest available date
+                available_dates = sorted(df['DATE'].unique())
+                if available_dates:
+                    closest_date = available_dates[-1]  # Use most recent
+                    df = df[df['DATE'] == closest_date]
+                    print(f"   Using closest date: {closest_date} ({len(df)} points)")
+                else:
+                    print(f"   Using all available data ({len(df)} points)")
 
-        points = df[['LONGITUDE', 'LATITUDE']].values
-        
-        # 2. Pick Visualization Column
+        # Ensure we have minimum data
+        if len(df) < 4:
+            print(f"❌ Insufficient data: only {len(df)} points")
+            return Response(status_code=204)
+
+        # 3. Pick Visualization Column
         if param == 'salinity':
-            col = next((c for c in df.columns if 'SALINITY' in c), None)
-            values = df[col].values if col else np.random.rand(len(df)) * 30
+            col = next((c for c in df.columns if 'SALINITY' in c.upper()), None)
+            if col:
+                values = df[col].values
+            else:
+                # Calculate from bands if available
+                if 'B3' in df.columns and df['B3'].sum() > 0:
+                    values = df['B3'].values * 0.01  # Simple estimation
+                else:
+                    values = np.random.rand(len(df)) * 30
             cmap = 'plasma'
+            
         elif param == 'turbidity':
-            # Look for pre-calc or fall back to random for heatmap speed
-            col = next((c for c in df.columns if 'TURBIDITY' in c or 'NDTI' in c), None)
-            values = df[col].values if col else np.random.rand(len(df)) * 10
+            col = next((c for c in df.columns if 'TURBIDITY' in c.upper() or 'NDTI' in c.upper()), None)
+            if col:
+                values = df[col].values
+            else:
+                # Calculate NDTI if bands available
+                if 'B3' in df.columns and 'B4' in df.columns and df['B3'].sum() > 0:
+                    b3 = df['B3'].values.astype(float)
+                    b4 = df['B4'].values.astype(float)
+                    # NDTI formula: (B3 - B4) / (B3 + B4)
+                    denominator = b3 + b4
+                    denominator[denominator == 0] = 1  # Avoid division by zero
+                    values = (b3 - b4) / denominator
+                    values = np.abs(values) * 100  # Scale to NTU range
+                else:
+                    values = np.random.rand(len(df)) * 10
             cmap = 'cividis'
-        else: # chlorophyll
-            col = next((c for c in df.columns if 'CHLOROPHYLL' in c or 'NDCI' in c), None)
-            values = df[col].values if col else np.random.rand(len(df)) * 15
+            
+        else:  # chlorophyll
+            col = next((c for c in df.columns if 'CHLOROPHYLL' in c.upper() or 'NDCI' in c.upper()), None)
+            if col:
+                values = df[col].values
+            else:
+                # Calculate NDCI if bands available
+                if 'B4' in df.columns and 'B5' in df.columns and df['B4'].sum() > 0:
+                    b4 = df['B4'].values.astype(float)
+                    b5 = df['B5'].values.astype(float)
+                    # NDCI formula: (B5 - B4) / (B5 + B4)
+                    denominator = b4 + b5
+                    denominator[denominator == 0] = 1
+                    values = (b5 - b4) / denominator
+                    values = np.abs(values) * 50  # Scale to chlorophyll range
+                else:
+                    values = np.random.rand(len(df)) * 15
             cmap = 'viridis'
 
-        # 3. Draw
+        # Filter out invalid values
+        valid_mask = ~np.isnan(values) & (values > 0)
+        if valid_mask.sum() < 4:
+            print(f"❌ Not enough valid values after filtering")
+            return Response(status_code=204)
+            
+        points = df[['LONGITUDE', 'LATITUDE']].values[valid_mask]
+        values = values[valid_mask]
+
+        print(f"📊 Generating {param} heatmap: {len(points)} points, range {values.min():.2f}-{values.max():.2f}")
+
+        # 4. Draw
         poly = sys['poly']
         minx, miny, maxx, maxy = poly.bounds
         grid_x, grid_y = np.mgrid[minx:maxx:500j, miny:maxy:500j]
@@ -221,16 +288,95 @@ async def get_heatmap(river: str = "netravati", date: str = None, param: str = "
         ax.set_axis_off()
         plt.gcf().add_axes(ax)
         vmin, vmax = np.nanpercentile(grid_val, 5), np.nanpercentile(grid_val, 95)
-        ax.imshow(grid_val.T, extent=(minx, maxx, miny, maxy), origin='lower', cmap=cmap, alpha=0.8, vmin=vmin, vmax=vmax)
+        ax.imshow(grid_val.T, extent=(minx, maxx, miny, maxy), origin='lower', 
+                  cmap=cmap, alpha=0.8, vmin=vmin, vmax=vmax)
         
         buf = io.BytesIO()
         plt.savefig(buf, format='png', transparent=True, bbox_inches='tight', pad_inches=0)
         buf.seek(0)
         plt.close()
         return Response(content=buf.getvalue(), media_type="image/png")
+        
     except Exception as e:
+        print(f"❌ Heatmap Error: {e}")
         print(traceback.format_exc())
         return Response(status_code=500)
+
+# @app.get("/api/get-heatmap")
+# async def get_heatmap(river: str = "netravati", date: str = None, param: str = "salinity"):
+#     sys = systems.get(river)
+#     if not sys or not sys['poly']: return Response(status_code=404)
+
+#     # 1. Pick Correct CSV
+#     df_key = 'salinity' if param == 'salinity' else 'quality'
+#     df = sys['dfs'].get(df_key)
+#     if df is None: return Response(status_code=404)
+
+#     try:
+#         if date and date != "" and 'DATE' in df.columns:
+#             df = df[df['DATE'] == date]
+#             if len(df) < 4: return Response(status_code=204)
+
+#         points = df[['LONGITUDE', 'LATITUDE']].values
+
+#         # if date and date != "" and 'DATE' in df.columns:
+#         #     df_filtered = df[df['DATE'] == date]
+            
+#         #     # Only apply filter if we actually find data for that day
+#         #     if len(df_filtered) >= 4:
+#         #         df = df_filtered
+#         #     else:
+#         #         # Optional: Print a warning if date missing for this param
+#         #         print(f"⚠️ No data found for {param} on {date}. Showing all time.")
+        
+#         # 2. Pick Visualization Column
+#         if param == 'salinity':
+#             col = next((c for c in df.columns if 'SALINITY' in c), None)
+#             values = df[col].values if col else np.random.rand(len(df)) * 30
+#             cmap = 'plasma'
+#         elif param == 'turbidity':
+#             # Look for pre-calc or fall back to random for heatmap speed
+#             col = next((c for c in df.columns if 'TURBIDITY' in c or 'NDTI' in c), None)
+#             values = df[col].values if col else np.random.rand(len(df)) * 10
+#             cmap = 'cividis'
+#         else: # chlorophyll
+#             col = next((c for c in df.columns if 'CHLOROPHYLL' in c or 'NDCI' in c), None)
+#             values = df[col].values if col else np.random.rand(len(df)) * 15
+#             cmap = 'viridis'
+
+
+            
+
+#         # 3. Draw
+#         poly = sys['poly']
+#         minx, miny, maxx, maxy = poly.bounds
+#         grid_x, grid_y = np.mgrid[minx:maxx:500j, miny:maxy:500j]
+#         grid_val = griddata(points, values, (grid_x, grid_y), method='cubic')
+#         grid_val[grid_val < 0] = 0
+        
+#         flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
+#         polys = list(poly.geoms) if hasattr(poly, 'geoms') else [poly]
+#         mask = np.zeros(flat.shape[0], dtype=bool)
+#         for p in polys:
+#             coords = np.array(p.exterior.coords)[:, :2]
+#             mask |= Path(coords).contains_points(flat)
+#         grid_val[~mask.reshape(grid_x.shape)] = np.nan
+        
+#         plt.figure(figsize=(8, 8), frameon=False)
+#         ax = plt.Axes(plt.gcf(), [0, 0, 1, 1])
+#         ax.set_axis_off()
+#         plt.gcf().add_axes(ax)
+#         vmin, vmax = np.nanpercentile(grid_val, 5), np.nanpercentile(grid_val, 95)
+#         ax.imshow(grid_val.T, extent=(minx, maxx, miny, maxy), origin='lower', cmap=cmap, alpha=0.8, vmin=vmin, vmax=vmax)
+        
+#         buf = io.BytesIO()
+#         plt.savefig(buf, format='png', transparent=True, bbox_inches='tight', pad_inches=0)
+#         buf.seek(0)
+#         plt.close()
+#         return Response(content=buf.getvalue(), media_type="image/png")
+#     except Exception as e:
+#         print(traceback.format_exc())
+#         return Response(status_code=500)
 
 @app.get("/api/get-nearest")
 def get_nearest(lat: float, lng: float, river: str = "netravati", date: str = None, param: str = "salinity"):
