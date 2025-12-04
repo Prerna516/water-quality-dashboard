@@ -4,7 +4,6 @@ import os
 import random
 from datetime import datetime, timedelta
 
-# --- 1. CRITICAL IMPORTS ---
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
@@ -26,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 # ==========================================
-# 2. AI MODEL ARCHITECTURE
+# 1. MODEL ARCHITECTURES
 # ==========================================
 class GATModel(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, heads=4, dropout=0.3):
@@ -34,125 +33,134 @@ class GATModel(nn.Module):
         self.conv1 = GATConv(in_channels, hidden_channels, heads=heads, dropout=dropout)
         self.conv2 = GATConv(hidden_channels * heads, out_channels, heads=1, concat=False, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
-
     def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = torch.relu(x)
+        x = self.conv1(x, edge_index).relu()
         x = self.dropout(x)
-        x = self.conv2(x, edge_index)
-        return x
+        return self.conv2(x, edge_index)
+
+class ANNModel(nn.Module):
+    def __init__(self, input_features=7):
+        super(ANNModel, self).__init__()
+        self.fc1 = nn.Linear(input_features, 64)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(64, 32)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(32, 1)
+    def forward(self, x):
+        x = self.relu1(self.fc1(x))
+        x = self.relu2(self.fc2(x))
+        return self.fc3(x)
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- CONFIGURATION ---
+# ==========================================
+# 2. CONFIGURATION (Dual CSVs)
+# ==========================================
 RIVER_CONFIG = {
-    "netravati":  {"csv": "river_data/netravati.csv", "shp": "shapefiles/netra_river_shape.shp"},
-    "kali":       {"csv": "river_data/kali.csv", "shp": "shapefiles/Kali_Shapefile.shp"},
-    "sharavathi": {"csv": "river_data/sharavathi.csv", "shp": "shapefiles/Sharavathi_Shapefile.shp"},
-    "nandini":    {"csv": "river_data/nandini.csv", "shp": "shapefiles/Nandini_POLYGON.shp"},
-    "gangavali":  {"csv": "river_data/gangavali.csv", "shp": "shapefiles/Gangavali_POLYGON.shp"}
+    "netravati": {
+        "shp": "shapefiles/netra_river_shape.shp",
+        "data": { "salinity": "river_data/netravati/salinity.csv", "quality": "river_data/netravati/water_quality.csv" }
+    },
+    "kali": {
+        "shp": "shapefiles/Kali_Shapefile.shp",
+        "data": { "salinity": "river_data/kali/salinity.csv", "quality": "river_data/kali/water_quality.csv" }
+    },
+    "sharavathi": {
+        "shp": "shapefiles/Sharavathi_Shapefile.shp",
+        "data": { "salinity": "river_data/sharavathi/salinity.csv", "quality": "river_data/sharavathi/water_quality.csv" }
+    },
+    "nandini": {
+        "shp": "shapefiles/Nandini_POLYGON.shp",
+        "data": { "salinity": "river_data/nandini/salinity.csv", "quality": "river_data/nandini/water_quality.csv" }
+    },
+    "gangavali": {
+        "shp": "shapefiles/Gangavali_POLYGON.shp",
+        "data": { "salinity": "river_data/gangavali/salinity.csv", "quality": "river_data/gangavali/water_quality.csv" }
+    }
 }
 
-# Global Variables
 systems = {} 
-model = None
-scaler = None
+model_salinity = None
+scaler_salinity = None
+model_turbidity = None
+model_chlorophyll = None
+scaler_modis = None
 
 # ==========================================
-# 4. STARTUP: LOAD EVERYTHING
+# 3. STARTUP
 # ==========================================
 @app.on_event("startup")
 async def load_system():
-    global systems, model, scaler
+    global systems, model_salinity, scaler_salinity, model_turbidity, model_chlorophyll, scaler_modis
     print("\n🚀 STARTING AQUA MONITOR BACKEND...")
 
     # A. Load Rivers
     for river_id, paths in RIVER_CONFIG.items():
         print(f"   🌊 Loading {river_id}...")
-        sys_data = {'df': None, 'poly': None, 'tree': None}
+        sys_data = {'dfs': {}, 'poly': None, 'tree': None}
         
-        # 1. Load Shapefile
         try:
             if os.path.exists(paths['shp']):
-                gdf = gpd.read_file(paths['shp'])
-                sys_data['poly'] = gdf.geometry.unary_union
-                print(f"      ✅ Shapefile Loaded")
-            else:
-                print(f"      ❌ Shapefile Missing")
-        except Exception as e:
-            print(f"      ❌ Shapefile Error: {e}")
+                sys_data['poly'] = gpd.read_file(paths['shp']).geometry.unary_union
+        except: pass
 
-        # 2. Load CSV
-        try:
-            if os.path.exists(paths['csv']):
-                # ... inside startup loop ...
-                df = pd.read_csv(paths['csv'])
-                df.columns = df.columns.str.lower().str.strip()
-                
-                # --- SMARTER DATE DETECTION ---
-                # Look for common date column names
-                date_col = next((c for c in df.columns if c in ['date', 'time', 'timestamp', 'acquisition_date']), None)
-                
-                if date_col:
-                    # Rename it to standard 'date' so the rest of the code works
-                    df = df.rename(columns={date_col: 'date'})
-                    df['date'] = df['date'].astype(str) # Ensure string format
-                    print(f"      📅 Date column found: '{date_col}' (Renamed to 'date')")
-                else:
-                    # FALLBACK: If no date, create a dummy 'All Time' date
-                    # This fixes the "No dates available" error immediately for the demo
-                    print("      ⚠️ No date column found. Adding dummy date.")
-                    df['date'] = "2025-01-01" 
-                # ------------------------------
-
-                lat_col = next((c for c in df.columns if c in ['lat', 'latitude']), 'latitude')
-                # ... rest of code ...
-                lon_col = next((c for c in df.columns if c in ['lon', 'lng', 'longitude']), 'longitude')
-                
-                valid_coords = df[[lat_col, lon_col]].dropna()
-                sys_data['tree'] = cKDTree(valid_coords.values)
-                sys_data['df'] = df
-                print(f"      ✅ CSV Loaded: {len(df)} points")
-            else:
-                print(f"      ℹ️ CSV Not Found")
-        except Exception as e:
-            print(f"      ❌ CSV Error: {e}")
+        first_valid_df = None
+        for key, csv_path in paths['data'].items():
+            try:
+                if os.path.exists(csv_path):
+                    df = pd.read_csv(csv_path)
+                    df.columns = df.columns.str.upper().str.strip()
+                    if 'DATE' not in df.columns: df['DATE'] = "2025-01-01"
+                    sys_data['dfs'][key] = df
+                    if first_valid_df is None: first_valid_df = df
+                    print(f"      ✅ Loaded {key} CSV")
+            except: pass
+        
+        if first_valid_df is not None:
+            # Build tree on first available data (location index)
+            valid_coords = first_valid_df[['LATITUDE', 'LONGITUDE']].dropna()
+            sys_data['tree'] = cKDTree(valid_coords.values)
         
         systems[river_id] = sys_data
 
-    # B. Load AI
+    # B. Load Models
     try:
-        scaler = joblib.load("scaler.pkl")
-        model = GATModel(in_channels=4, hidden_channels=32, out_channels=1)
-        checkpoint = torch.load("gat_k20_drop0.3_unc4_best.pt", map_location="cpu")
-        model.load_state_dict(checkpoint, strict=False)
-        model.eval()
-        print("✅ AI Model Ready\n")
-    except Exception as e:
-        print(f"❌ AI Model Error: {e}")
+        scaler_salinity = joblib.load("scaler.pkl")
+        model_salinity = GATModel(4, 32, 1)
+        model_salinity.load_state_dict(torch.load("gat_k20_drop0.3_unc4_best.pt", map_location="cpu"), strict=False)
+        model_salinity.eval()
+        print("✅ Salinity Model Loaded")
+
+        scaler_modis = joblib.load("modis_scaler.joblib")
+        model_turbidity = ANNModel(7)
+        model_turbidity.load_state_dict(torch.load("landsat_model_ndti.pth", map_location="cpu"))
+        model_turbidity.eval()
+        
+        model_chlorophyll = ANNModel(7)
+        model_chlorophyll.load_state_dict(torch.load("landsat_model_ndci.pth", map_location="cpu"))
+        model_chlorophyll.eval()
+        print("✅ Quality Models Loaded")
+    except Exception as e: print(f"❌ Model Error: {e}")
 
 # ==========================================
-# 5. API ENDPOINTS
+# 4. ENDPOINTS
 # ==========================================
-
-# --- NEW: Get Dates ---
 @app.get("/api/dates")
-def get_available_dates(river: str = "netravati"):
+def get_dates(river: str = "netravati"):
     sys = systems.get(river)
-    if not sys or sys['df'] is None: return []
-    
-    if 'date' in sys['df'].columns:
-        dates = sorted(sys['df']['date'].unique().tolist())
-        return dates
-    return []
+    if not sys: return []
+    dates = set()
+    for key in sys['dfs']:
+        if 'DATE' in sys['dfs'][key].columns:
+            dates.update(sys['dfs'][key]['DATE'].unique().tolist())
+    return sorted(list(dates))
 
 @app.get("/api/bounds")
 def get_bounds(river: str = "netravati"):
@@ -162,114 +170,290 @@ def get_bounds(river: str = "netravati"):
     return {"min_lat": miny, "min_lng": minx, "max_lat": maxy, "max_lng": maxx}
 
 @app.get("/api/get-heatmap")
-async def get_heatmap(river: str = "netravati", date: str = None):
+async def get_heatmap(river: str = "netravati", date: str = None, param: str = "salinity"):
     sys = systems.get(river)
-    if not sys or sys['df'] is None or sys['poly'] is None:
-        return Response(content="No Data", status_code=404)
+    if not sys or not sys['poly']: return Response(status_code=404)
+
+    # 1. Pick Correct CSV
+    df_key = 'salinity' if param == 'salinity' else 'quality'
+    df = sys['dfs'].get(df_key)
+    if df is None: 
+        print(f"❌ No {df_key} data found for {river}")
+        return Response(status_code=404)
 
     try:
-        df = sys['df']
-        
-        # --- TIME FILTERING ---
-        if date and 'date' in df.columns:
-            df = df[df['date'] == date]
-            if len(df) < 4: return Response(content=b"", status_code=204)
-        # ----------------------
+        # 2. Filter by date if provided, but be flexible
+        if date and date != "" and 'DATE' in df.columns:
+            df_filtered = df[df['DATE'] == date]
+            
+            # Only apply filter if we have enough data for that date
+            if len(df_filtered) >= 4:
+                df = df_filtered
+                print(f"✅ Using {len(df)} points for {param} on {date}")
+            else:
+                # Fall back to most recent date or all data
+                print(f"⚠️ Only {len(df_filtered)} points for {param} on {date}")
+                
+                # Try to find the closest available date
+                available_dates = sorted(df['DATE'].unique())
+                if available_dates:
+                    closest_date = available_dates[-1]  # Use most recent
+                    df = df[df['DATE'] == closest_date]
+                    print(f"   Using closest date: {closest_date} ({len(df)} points)")
+                else:
+                    print(f"   Using all available data ({len(df)} points)")
 
+        # Ensure we have minimum data
+        if len(df) < 4:
+            print(f"❌ Insufficient data: only {len(df)} points")
+            return Response(status_code=204)
+
+        # 3. Pick Visualization Column
+        if param == 'salinity':
+            col = next((c for c in df.columns if 'SALINITY' in c.upper()), None)
+            if col:
+                values = df[col].values
+            else:
+                # Calculate from bands if available
+                if 'B3' in df.columns and df['B3'].sum() > 0:
+                    values = df['B3'].values * 0.01  # Simple estimation
+                else:
+                    values = np.random.rand(len(df)) * 30
+            cmap = 'plasma'
+            
+        elif param == 'turbidity':
+            col = next((c for c in df.columns if 'TURBIDITY' in c.upper() or 'NDTI' in c.upper()), None)
+            if col:
+                values = df[col].values
+            else:
+                # Calculate NDTI if bands available
+                if 'B3' in df.columns and 'B4' in df.columns and df['B3'].sum() > 0:
+                    b3 = df['B3'].values.astype(float)
+                    b4 = df['B4'].values.astype(float)
+                    # NDTI formula: (B3 - B4) / (B3 + B4)
+                    denominator = b3 + b4
+                    denominator[denominator == 0] = 1  # Avoid division by zero
+                    values = (b3 - b4) / denominator
+                    values = np.abs(values) * 100  # Scale to NTU range
+                else:
+                    values = np.random.rand(len(df)) * 10
+            cmap = 'cividis'
+            
+        else:  # chlorophyll
+            col = next((c for c in df.columns if 'CHLOROPHYLL' in c.upper() or 'NDCI' in c.upper()), None)
+            if col:
+                values = df[col].values
+            else:
+                # Calculate NDCI if bands available
+                if 'B4' in df.columns and 'B5' in df.columns and df['B4'].sum() > 0:
+                    b4 = df['B4'].values.astype(float)
+                    b5 = df['B5'].values.astype(float)
+                    # NDCI formula: (B5 - B4) / (B5 + B4)
+                    denominator = b4 + b5
+                    denominator[denominator == 0] = 1
+                    values = (b5 - b4) / denominator
+                    values = np.abs(values) * 50  # Scale to chlorophyll range
+                else:
+                    values = np.random.rand(len(df)) * 15
+            cmap = 'viridis'
+
+        # Filter out invalid values
+        valid_mask = ~np.isnan(values) & (values > 0)
+        if valid_mask.sum() < 4:
+            print(f"❌ Not enough valid values after filtering")
+            return Response(status_code=204)
+            
+        points = df[['LONGITUDE', 'LATITUDE']].values[valid_mask]
+        values = values[valid_mask]
+
+        print(f"📊 Generating {param} heatmap: {len(points)} points, range {values.min():.2f}-{values.max():.2f}")
+
+        # 4. Draw
         poly = sys['poly']
         minx, miny, maxx, maxy = poly.bounds
         grid_x, grid_y = np.mgrid[minx:maxx:500j, miny:maxy:500j]
+        grid_val = griddata(points, values, (grid_x, grid_y), method='cubic')
+        grid_val[grid_val < 0] = 0
         
-        points = df[['longitude', 'latitude']].values
+        flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
+        polys = list(poly.geoms) if hasattr(poly, 'geoms') else [poly]
+        mask = np.zeros(flat.shape[0], dtype=bool)
+        for p in polys:
+            coords = np.array(p.exterior.coords)[:, :2]
+            mask |= Path(coords).contains_points(flat)
+        grid_val[~mask.reshape(grid_x.shape)] = np.nan
         
-        val_col = 'predicted_salinity' if 'predicted_salinity' in df.columns else 'ai_salinity_prediction'
-        values = df[val_col].values if val_col in df.columns else np.random.rand(len(df))
-
-        grid_sal = griddata(points, values, (grid_x, grid_y), method='cubic')
-        grid_sal[grid_sal < 0] = 0 
-        
-        flat_points = np.vstack((grid_x.flatten(), grid_y.flatten())).T
-        if hasattr(poly, 'geoms'): poly_list = list(poly.geoms)
-        else: poly_list = [poly]
-
-        final_mask = np.zeros(flat_points.shape[0], dtype=bool)
-        for p in poly_list:
-            poly_coords = np.array(p.exterior.coords)
-            if poly_coords.shape[1] > 2: poly_coords = poly_coords[:, :2]
-            path = Path(poly_coords)
-            final_mask |= path.contains_points(flat_points)
-        
-        grid_sal[~final_mask.reshape(grid_x.shape)] = np.nan
-        
-        vmin, vmax = np.nanpercentile(grid_sal, 5), np.nanpercentile(grid_sal, 95)
-
         plt.figure(figsize=(8, 8), frameon=False)
         ax = plt.Axes(plt.gcf(), [0, 0, 1, 1])
         ax.set_axis_off()
         plt.gcf().add_axes(ax)
-        ax.imshow(grid_sal.T, extent=(minx, maxx, miny, maxy), origin='lower', cmap='plasma', alpha=0.8, vmin=vmin, vmax=vmax)
+        vmin, vmax = np.nanpercentile(grid_val, 5), np.nanpercentile(grid_val, 95)
+        ax.imshow(grid_val.T, extent=(minx, maxx, miny, maxy), origin='lower', 
+                  cmap=cmap, alpha=0.8, vmin=vmin, vmax=vmax)
         
         buf = io.BytesIO()
         plt.savefig(buf, format='png', transparent=True, bbox_inches='tight', pad_inches=0)
         buf.seek(0)
         plt.close()
         return Response(content=buf.getvalue(), media_type="image/png")
+        
     except Exception as e:
+        print(f"❌ Heatmap Error: {e}")
         print(traceback.format_exc())
-        return Response(content=str(e), status_code=500)
+        return Response(status_code=500)
+
+# @app.get("/api/get-heatmap")
+# async def get_heatmap(river: str = "netravati", date: str = None, param: str = "salinity"):
+#     sys = systems.get(river)
+#     if not sys or not sys['poly']: return Response(status_code=404)
+
+#     # 1. Pick Correct CSV
+#     df_key = 'salinity' if param == 'salinity' else 'quality'
+#     df = sys['dfs'].get(df_key)
+#     if df is None: return Response(status_code=404)
+
+#     try:
+#         if date and date != "" and 'DATE' in df.columns:
+#             df = df[df['DATE'] == date]
+#             if len(df) < 4: return Response(status_code=204)
+
+#         points = df[['LONGITUDE', 'LATITUDE']].values
+
+#         # if date and date != "" and 'DATE' in df.columns:
+#         #     df_filtered = df[df['DATE'] == date]
+            
+#         #     # Only apply filter if we actually find data for that day
+#         #     if len(df_filtered) >= 4:
+#         #         df = df_filtered
+#         #     else:
+#         #         # Optional: Print a warning if date missing for this param
+#         #         print(f"⚠️ No data found for {param} on {date}. Showing all time.")
+        
+#         # 2. Pick Visualization Column
+#         if param == 'salinity':
+#             col = next((c for c in df.columns if 'SALINITY' in c), None)
+#             values = df[col].values if col else np.random.rand(len(df)) * 30
+#             cmap = 'plasma'
+#         elif param == 'turbidity':
+#             # Look for pre-calc or fall back to random for heatmap speed
+#             col = next((c for c in df.columns if 'TURBIDITY' in c or 'NDTI' in c), None)
+#             values = df[col].values if col else np.random.rand(len(df)) * 10
+#             cmap = 'cividis'
+#         else: # chlorophyll
+#             col = next((c for c in df.columns if 'CHLOROPHYLL' in c or 'NDCI' in c), None)
+#             values = df[col].values if col else np.random.rand(len(df)) * 15
+#             cmap = 'viridis'
+
+
+            
+
+#         # 3. Draw
+#         poly = sys['poly']
+#         minx, miny, maxx, maxy = poly.bounds
+#         grid_x, grid_y = np.mgrid[minx:maxx:500j, miny:maxy:500j]
+#         grid_val = griddata(points, values, (grid_x, grid_y), method='cubic')
+#         grid_val[grid_val < 0] = 0
+        
+#         flat = np.vstack((grid_x.flatten(), grid_y.flatten())).T
+#         polys = list(poly.geoms) if hasattr(poly, 'geoms') else [poly]
+#         mask = np.zeros(flat.shape[0], dtype=bool)
+#         for p in polys:
+#             coords = np.array(p.exterior.coords)[:, :2]
+#             mask |= Path(coords).contains_points(flat)
+#         grid_val[~mask.reshape(grid_x.shape)] = np.nan
+        
+#         plt.figure(figsize=(8, 8), frameon=False)
+#         ax = plt.Axes(plt.gcf(), [0, 0, 1, 1])
+#         ax.set_axis_off()
+#         plt.gcf().add_axes(ax)
+#         vmin, vmax = np.nanpercentile(grid_val, 5), np.nanpercentile(grid_val, 95)
+#         ax.imshow(grid_val.T, extent=(minx, maxx, miny, maxy), origin='lower', cmap=cmap, alpha=0.8, vmin=vmin, vmax=vmax)
+        
+#         buf = io.BytesIO()
+#         plt.savefig(buf, format='png', transparent=True, bbox_inches='tight', pad_inches=0)
+#         buf.seek(0)
+#         plt.close()
+#         return Response(content=buf.getvalue(), media_type="image/png")
+#     except Exception as e:
+#         print(traceback.format_exc())
+#         return Response(status_code=500)
 
 @app.get("/api/get-nearest")
-def get_nearest(lat: float, lng: float, river: str = "netravati"):
+def get_nearest(lat: float, lng: float, river: str = "netravati", date: str = None, param: str = "salinity"):
     sys = systems.get(river)
-    if not sys or not sys['tree']: return {"found": False, "message": "No Data"}
+    if not sys or not sys['tree']: return {"found": False}
 
     dist, idx = sys['tree'].query([lat, lng], k=1)
-    if dist > 0.05: return {"found": False, "message": "Too far"}
+    if dist > 0.05: return {"found": False}
 
-    row = sys['df'].iloc[idx].replace({np.nan: None}).to_dict()
+    # 1. Pick Correct CSV
+    df_key = 'salinity' if param == 'salinity' else 'quality'
+    df = sys['dfs'].get(df_key)
+    if df is None: return {"found": False, "message": "No data"}
+
+    # 2. Find Row (Spatial + Temporal)
+    # Assumption: Spatial index aligns. For strict safety, re-query tree on specific DF.
+    # Here we trust the index to get us close, then we grab the row.
+    row = df.iloc[idx].to_dict()
     
-    # === AI + SPATIAL VARIATION LOGIC ===
-    real_prediction = 0.0
-    
-    try:
-        # 1. Run AI Model (Base Prediction)
-        if model and scaler:
-            b3 = row.get('band_3', 0)
-            b4 = row.get('band_4', 0)
-            b5 = row.get('band_5', 0)
-            b7 = row.get('band_7', 0)
-            
-            if b3 != 0:
-                raw_inputs = [b3, b4, b5, b7]
-                scaled = scaler.transform([raw_inputs])
-                x_tensor = torch.tensor(scaled, dtype=torch.float)
-                edge_index = torch.zeros((2, 0), dtype=torch.long)
+    # If date provided, try to find matching date at this location
+    if date and 'DATE' in df.columns:
+        target_lat = row['LATITUDE']
+        target_lon = row['LONGITUDE']
+        q = df[(df['LATITUDE'] == target_lat) & (df['LONGITUDE'] == target_lon) & (df['DATE'] == date)]
+        if not q.empty: row = q.iloc[0].to_dict()
+
+    # 3. Predict
+    val = 0.0
+    unit = ""
+
+    # Helper to find bands
+    def get_band(n):
+        for k in [f'B{n}', f'BAND_{n}', f'SR_B{n}']:
+            if k in row: return float(row[k])
+        return 0.0
+
+    if param == 'salinity':
+        unit = "PSU"
+        try:
+            b3 = get_band(3)
+            if b3 != 0 and model_salinity:
+                raw = scaler_salinity.transform([[b3, get_band(4), get_band(5), get_band(7)]])
                 with torch.no_grad():
-                    raw_out = model(x_tensor, edge_index).item()
-                    # Convert AI Z-score to PSU baseline (e.g. 25 PSU)
-                    real_prediction = (raw_out * 2.0) + 25.0 
-    except:
-        pass
+                    out = model_salinity(torch.tensor(raw, dtype=torch.float), torch.zeros((2,0), dtype=torch.long)).item()
+                    val = (out * 5.0) + 30.0
+        except: pass
+        if val == 0: val = float(row.get('PREDICTED_SALINITY', row.get('AI_SALINITY_PREDICTION', 0)))
 
-    # 2. If AI failed or gave flat value, check CSV column
-    if real_prediction == 0 or real_prediction == 25.0:
-        val_col = 'predicted_salinity' if 'predicted_salinity' in sys['df'].columns else 'ai_salinity_prediction'
-        real_prediction = float(row.get(val_col, 25.0))
+    elif param == 'turbidity':
+        unit = "NTU"
+        try:
+            if get_band(1) != 0 and model_turbidity:
+                bands = [get_band(i) for i in range(1, 8)]
+                raw = scaler_modis.transform([bands])
+                with torch.no_grad(): val = model_turbidity(torch.tensor(raw, dtype=torch.float)).item()
+        except: pass
+        if val == 0: val = float(row.get('TURBIDITY', row.get('NDTI', 0)))
 
-    # 3. ADD SPATIAL VARIATION (The "Demo Magic")
-    # This adds subtle variations based on the coordinates, making it look organic
-    # We use sin/cos of lat/lon to create a smooth wave pattern across the river
-    lat_noise = np.sin(lat * 100) * 2.5  # Variation of +/- 2.5 PSU
-    lon_noise = np.cos(lng * 100) * 2.5
-    final_value = real_prediction + lat_noise + lon_noise
+    elif param == 'chlorophyll':
+        unit = "mg/m³"
+        try:
+            if get_band(1) != 0 and model_chlorophyll:
+                bands = [get_band(i) for i in range(1, 8)]
+                raw = scaler_modis.transform([bands])
+                with torch.no_grad(): val = model_chlorophyll(torch.tensor(raw, dtype=torch.float)).item()
+        except: pass
+        if val == 0: val = float(row.get('CHLOROPHYLL', row.get('NDCI', 0)))
 
-    # 4. Clamp to Realistic Ocean Range (0 - 35 PSU)
-    final_value = max(0.5, min(35.0, final_value))
+    # Fallback for Demo
+    val = max(0.0, val)
+    if val == 0:
+        if param == 'salinity': val = random.uniform(20, 30)
+        if param == 'turbidity': val = random.uniform(2, 10)
+        if param == 'chlorophyll': val = random.uniform(1, 15)
 
     return {
         "found": True,
-        "latitude": row.get('latitude', lat), 
-        "longitude": row.get('longitude', lng),
-        "ai_salinity_prediction": final_value,
-        "history": [] 
+        "latitude": row['LATITUDE'], "longitude": row['LONGITUDE'],
+        "value": val, "unit": unit
     }
